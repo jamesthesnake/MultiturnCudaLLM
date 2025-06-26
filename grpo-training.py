@@ -8,13 +8,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import json
 import os
 from collections import defaultdict
 import wandb
 from tqdm import tqdm
 import random
+import asyncio
 
 from cuda_rl_system import (
     KernelState, OptimizationTrajectory, CurriculumBuffer,
@@ -170,20 +171,39 @@ class GRPOTrainer:
         """Single GRPO training step using multi-GPU setup"""
         
         # Use multi-GPU optimizer for parallel evaluation
-        trajectories = await self.multi_gpu_optimizer.optimize_batch(
-            self.specialist,
-            problems,
-            use_search=False  # No search during training
-        )
+        all_trajectories = []
         
-        # Collect rewards and compute advantages
+        # Process in smaller batches for memory efficiency
+        batch_size = 4  # Process 4 problems at a time
+        for i in range(0, len(problems), batch_size):
+            batch_problems = problems[i:i+batch_size]
+            
+            # Generate trajectories for each problem with group_size variants
+            expanded_problems = []
+            for problem in batch_problems:
+                for _ in range(self.group_size):
+                    expanded_problems.append(problem)
+            
+            # Get trajectories from multi-GPU system
+            batch_trajectories = await self.multi_gpu_optimizer.optimize_batch(
+                self.specialist,
+                expanded_problems,
+                use_search=False  # No search during training
+            )
+            
+            all_trajectories.extend(batch_trajectories)
+        
+        # Organize trajectories by problem and compute advantages
         all_rewards = []
         all_advantages = []
         problem_groups = []
         
         for i, problem in enumerate(problems):
             # Get group of trajectories for this problem
-            group_trajectories = trajectories[i*self.group_size:(i+1)*self.group_size]
+            start_idx = i * self.group_size
+            end_idx = start_idx + self.group_size
+            group_trajectories = all_trajectories[start_idx:end_idx]
+            
             rewards = [t.total_reward for t in group_trajectories]
             
             # Compute advantages
@@ -195,21 +215,93 @@ class GRPOTrainer:
             problem_groups.append({
                 'problem_id': problem['problem_id'],
                 'rewards': rewards,
-                'has_variance': np.var(rewards) > 0.01
+                'has_variance': np.var(rewards) > 0.01,
+                'trajectories': group_trajectories
             })
+        
+        # Update curriculum buffer
+        for group in problem_groups:
+            if group['has_variance']:
+                self.specialist.curriculum_buffer.add_group(
+                    group['problem_id'],
+                    group['rewards']
+                )
         
         # Compute policy gradients on GPU 0
         total_loss = 0.0
         total_pg_loss = 0.0
         total_kl_loss = 0.0
+        num_updates = 0
         
         with torch.cuda.device(0):
             self.optimizer.zero_grad()
             
-            # ... rest of gradient computation same as before ...
+            for group in problem_groups:
+                for traj_idx, (trajectory, advantage) in enumerate(zip(group['trajectories'], advantages)):
+                    # Skip if advantage is zero
+                    if abs(advantage) < 1e-6:
+                        continue
+                    
+                    # Compute loss for each state transition
+                    for j in range(1, len(trajectory.states)):
+                        prev_state = trajectory.states[j-1]
+                        curr_state = trajectory.states[j]
+                        
+                        # Get action (the optimization applied)
+                        action_prompt = self._create_action_prompt(prev_state, curr_state)
+                        
+                        # Compute log probabilities
+                        with torch.no_grad():
+                            ref_logprobs = self._compute_logprobs(
+                                self.reference_model,
+                                action_prompt,
+                                curr_state.code
+                            )
+                        
+                        logprobs = self._compute_logprobs(
+                            self.specialist.model,
+                            action_prompt,
+                            curr_state.code
+                        )
+                        
+                        # Policy gradient loss
+                        ratio = torch.exp(logprobs - ref_logprobs)
+                        pg_loss1 = -advantage * ratio
+                        pg_loss2 = -advantage * torch.clamp(ratio, 0.8, 1.2)
+                        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                        
+                        # KL penalty
+                        kl_loss = self.compute_kl_penalty(logprobs, ref_logprobs)
+                        
+                        # Total loss
+                        loss = pg_loss + kl_loss
+                        loss.backward()
+                        
+                        total_loss += loss.item()
+                        total_pg_loss += pg_loss.item()
+                        total_kl_loss += kl_loss.item()
+                        num_updates += 1
             
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.specialist.model.parameters(), 1.0)
+            
+            # Update model
+            self.optimizer.step()
+        
         # Print GPU utilization
-        self.multi_gpu_optimizer.print_gpu_status()
+        if hasattr(self.multi_gpu_optimizer, 'print_gpu_status'):
+            self.multi_gpu_optimizer.print_gpu_status()
+        
+        # Compute statistics
+        stats = {
+            'total_loss': total_loss / max(num_updates, 1),
+            'pg_loss': total_pg_loss / max(num_updates, 1),
+            'kl_loss': total_kl_loss / max(num_updates, 1),
+            'mean_reward': np.mean(all_rewards),
+            'reward_variance': np.var(all_rewards),
+            'non_trivial_fraction': sum(1 for g in problem_groups if g['has_variance']) / len(problem_groups),
+            'num_updates': num_updates
+        }
         
         return stats
         """Single GRPO training step"""
