@@ -1,0 +1,41 @@
+# Core ML dependencies
+torch>=2.0.0
+transformers>=4.30.0
+accelerate>=0.20.0
+
+# For DeepSeek-Coder model
+einops>=0.6.1
+bitsandbytes>=0.40.0  # For 8-bit quantization if needed
+
+# Scientific computing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Experiment tracking (optional but recommended)
+wandb>=0.15.0
+
+# Progress bars and utilities
+tqdm>=4.65.0
+
+# For JSON and file handling
+jsonlines>=3.1.0
+
+# CUDA development (optional - for local testing without real CUDA)
+# pycuda>=2022.2  # Uncomment if you want to run actual CUDA code
+
+# For code formatting and analysis
+black>=23.0.0
+isort>=5.12.0
+
+# Testing
+pytest>=7.3.0
+pytest-cov>=4.1.0
+
+# Additional utilities
+python-dotenv>=1.0.0  # For environment variables
+pyyaml>=6.0  # For config files
