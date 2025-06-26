@@ -249,9 +249,63 @@ class RewardCalculator:
                         optimization_type: str) -> float:
         """
         Calculate reward using product of format and accuracy rewards (like ether0)
+        Now with real performance metrics!
         """
         # Format reward (does it compile?)
         format_reward = 1.0 if current_metrics['compiles'] else 0.0
+        
+        # Accuracy reward (is it correct?)
+        accuracy_reward = 1.0 if current_metrics.get('correct', True) else 0.0
+        
+        # Performance reward based on real metrics
+        perf_reward = 0.0
+        
+        if format_reward > 0 and accuracy_reward > 0:
+            # Use actual GFLOPS if available
+            current_gflops = current_metrics.get('gflops', 0)
+            
+            if previous_metrics and previous_metrics.get('gflops', 0) > 0:
+                # Calculate speedup
+                speedup = current_gflops / previous_metrics.get('gflops', 1)
+                # Reward improvements, penalize regressions
+                perf_reward = np.log2(speedup) if speedup > 0 else -1.0
+                perf_reward = np.clip(perf_reward, -1, 2)  # Clip to reasonable range
+            else:
+                # First turn - reward based on efficiency
+                # A40 peak is 37.4 TFLOPS
+                efficiency = current_metrics.get('percent_of_peak', 0) / 100.0
+                perf_reward = efficiency  # 0 to 1 based on peak utilization
+            
+            # Bonus for power efficiency
+            if 'gflops_per_watt' in current_metrics:
+                power_bonus = current_metrics['gflops_per_watt'] / 200.0  # Normalize by typical value
+                perf_reward += 0.1 * np.clip(power_bonus, 0, 1)
+            
+            # Bonus for good occupancy
+            occupancy = current_metrics.get('occupancy', 0.5)
+            if occupancy > 0.7:
+                perf_reward += 0.1
+        
+        # Turn-specific bonuses
+        turn_bonus = 0.0
+        if turn in self.turn_bonuses and optimization_type in self.turn_bonuses[turn]:
+            turn_bonus = self.turn_bonuses[turn][optimization_type]
+        
+        # Product reward (like ether0) with performance component
+        base_reward = format_reward * accuracy_reward * (0.3 + 0.7 * np.clip(perf_reward, 0, 1))
+        
+        # Add turn bonus
+        total_reward = base_reward * (1 + turn_bonus)
+        
+        # Log reward components for debugging
+        if current_gflops > 0:
+            print(f"[RewardCalculator] Reward breakdown:")
+            print(f"  Format: {format_reward}, Accuracy: {accuracy_reward}")
+            print(f"  Performance: {perf_reward:.3f} (GFLOPS: {current_gflops:.1f})")
+            print(f"  Turn bonus: {turn_bonus}")
+            print(f"  Total reward: {total_reward:.3f}")
+        
+        return total_reward['compiles'] else 0.0
         
         # Accuracy reward (is it correct?)
         accuracy_reward = 1.0 if current_metrics['correct'] else 0.0
