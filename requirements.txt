@@ -1,5 +1,5 @@
 # Core ML dependencies
-torch>=2.0.0
+torch==2.1.0+cu118  # For CUDA 11.8 compatibility with A40
 transformers>=4.30.0
 accelerate>=0.20.0
 
@@ -11,6 +11,10 @@ bitsandbytes>=0.40.0  # For 8-bit quantization if needed
 numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0
+
+# Async support for multi-GPU
+asyncio-pool>=0.6.0
+aiofiles>=23.0.0
 
 # Visualization
 matplotlib>=3.7.0
@@ -25,6 +29,9 @@ tqdm>=4.65.0
 # For JSON and file handling
 jsonlines>=3.1.0
 
+# Process management for multi-GPU
+psutil>=5.9.0
+
 # CUDA development (optional - for local testing without real CUDA)
 # pycuda>=2022.2  # Uncomment if you want to run actual CUDA code
 
@@ -35,7 +42,12 @@ isort>=5.12.0
 # Testing
 pytest>=7.3.0
 pytest-cov>=4.1.0
+pytest-asyncio>=0.21.0
 
 # Additional utilities
 python-dotenv>=1.0.0  # For environment variables
 pyyaml>=6.0  # For config files
+
+# GPU monitoring
+nvidia-ml-py>=12.535.0  # For GPU monitoring
+gpustat>=1.1.0
